@@ -45,7 +45,8 @@ class FeishuGroupRouter:
             return None
 
     def parse(self, native: Callable[..., Any], source: str, body: Any, form: Any,
-              args: Any, rejected: Callable[[], Any]) -> Any:
+              args: Any, rejected: Callable[[], Any], *, allow_music_members: bool = False,
+              on_music: Callable[[Any, str, str], Any] | None = None) -> Any:
         if isinstance(body, (str, bytes, bytearray)):
             try:
                 body = json.loads(body)
@@ -61,13 +62,30 @@ class FeishuGroupRouter:
         text = normalized.get('text')
         if isinstance(text, str):
             normalized['text'] = re.sub(r'^(?:\s*@_user_\d+\s*)+(?=/)', '', text).strip()
-        # Native parser still validates the actual sender against FEISHU_ADMINS.
+        normalized_text = str(normalized.get('text') or '')
+        music = re.fullmatch(r'/(music|music_pick|music_status)(?:\s+(.*))?', normalized_text, re.DOTALL)
+        member_music = bool(allow_music_members and on_music and music)
+        if member_music:
+            # Native MP treats every slash command as administrative. Parse this
+            # strictly allowlisted input as ordinary text to obtain the REAL user
+            # and role facts, then dispatch ONLY our owned music handler below.
+            # It never reaches the host's global command registry.
+            normalized['text'] = normalized_text[1:]
         incoming = native(source=source, body=normalized, form=form, args=args)
         if incoming is None:
             # A truthy empty IncomingMessage prevents a second native fallback
             # from reinterpreting the unnormalized text after permission rejection.
             return rejected()
         incoming.source = self._encode(source)
+        if member_music:
+            if getattr(incoming, 'userid', None):
+                incoming.text = normalized_text
+                on_music(incoming, '/' + music.group(1), (music.group(2) or '').strip())
+            return rejected()
+        if getattr(incoming, 'is_channel_admin', False) is not True:
+            own_callback = body.get('type') == 'cardAction' and str(body.get('callback_data') or '').startswith('[PLUGIN]MusicDownloadBridge|')
+            if not allow_music_members or not own_callback:
+                return rejected()
         return incoming
 
     def restore(self, message: Any) -> bool:

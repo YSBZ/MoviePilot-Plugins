@@ -93,7 +93,7 @@ class Host316ContractTests(adapter.PluginAdapterTests):
         module = load_class("app/modules/feishu/module.py", "FeishuModule", {"_resolve_message_target"}, {})
         router = self.plugin_module.FeishuGroupRouter("oc_testgroup", b"k" * 32)
         incoming = router.parse(
-            lambda **kwargs: types.SimpleNamespace(source=kwargs["source"], userid="ou_alice"),
+            lambda **kwargs: types.SimpleNamespace(source=kwargs["source"], userid="ou_alice", is_channel_admin=True),
             "飞书音乐机器人", {"chat_id": "oc_testgroup", "chat_type": "group"}, None, {}, lambda: None,
         )
         targets = []
@@ -122,3 +122,43 @@ class Host316ContractTests(adapter.PluginAdapterTests):
         self.assertLessEqual(len(rows), 3)
         self.assertIn("pick:session123:10", json.dumps(rows))
         self.assertEqual(sum(len(row["columns"]) for row in rows), 6)
+
+    def test_real_native_parser_keeps_member_role_false_and_admin_commands_blocked(self):
+        import json
+        class Incoming(types.SimpleNamespace):
+            class MessageImage:
+                @staticmethod
+                def normalize_list(value):
+                    return value or None
+        tree=ast.parse(Path(HOST_ROOT,"app/modules/feishu/feishu.py").read_text())
+        original=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=="Feishu")
+        methods=[n for n in original.body if isinstance(n,ast.FunctionDef) and n.name in {"parse_message","_should_reject_admin_command"}]
+        shell=ast.ClassDef(name="Feishu",bases=[],keywords=[],body=methods,decorator_list=[])
+        module=ast.Module(body=[ast.ImportFrom(module="__future__",names=[ast.alias(name="annotations")],level=0),shell],type_ignores=[])
+        namespace={"json":json,"IncomingMessage":Incoming,"NotificationChannel":types.SimpleNamespace(Feishu="飞书"),
+                   "matches_channel_admin":lambda channel,config,*ids:any(uid in config["FEISHU_ADMINS"].split(",") for uid in ids),
+                   "logger":types.SimpleNamespace(debug=lambda *_:None)}
+        exec(compile(ast.fix_missing_locations(module),"real-feishu-parser.py","exec"),namespace)
+        native=namespace["Feishu"]()
+        native._name="飞书音乐机器人"
+        native._admins=["ou_alice"]
+        native._default_open_id="ou_alice"
+        native._resolve_username=lambda **kwargs:kwargs["fallback"]
+        denials=[]
+        native.send_text=lambda *args,**kwargs:denials.append(args)
+        router=self.plugin_module.FeishuGroupRouter("oc_testgroup",b"k"*32)
+        calls=[]
+        def parse(command,enabled):
+            return router.parse(lambda **kwargs:native.parse_message(kwargs["body"]),"飞书音乐机器人",
+                dict(chat_id="oc_testgroup",chat_type="group",text=command,sender={"open_id":"ou_bob"}),None,{},
+                lambda:types.SimpleNamespace(userid=None),allow_music_members=enabled,
+                on_music=lambda info,cmd,args:calls.append((info,cmd,args)))
+        parse("/music 夜曲",False)
+        self.assertEqual(len(denials),1)
+        self.assertEqual(calls,[])
+        parse("/music 夜曲",True)
+        self.assertEqual(calls[0][0].userid,"ou_bob")
+        self.assertFalse(calls[0][0].is_channel_admin)
+        parse("/restart",True)
+        self.assertEqual(len(denials),2)
+        self.assertEqual(len(calls),1)

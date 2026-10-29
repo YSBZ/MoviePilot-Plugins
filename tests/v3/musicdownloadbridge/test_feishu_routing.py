@@ -87,3 +87,63 @@ class RoutingTests(unittest.TestCase):
     def test_ordinary_text_is_not_rewritten_as_command(self):
         result = self.parse('@_user_1 夜曲')
         self.assertEqual(result.text, '@_user_1 夜曲')
+
+    def member_native(self, **kwargs):
+        self.seen.append(kwargs)
+        body = kwargs["body"]
+        if str(body.get("text", "")).startswith("/"):
+            return None  # Real v3.1.6 native parser rejects non-admin slash commands.
+        return types.SimpleNamespace(userid="ou_bob", channel="飞书", source=kwargs["source"],
+                                     text=body.get("text", ""), is_channel_admin=False)
+
+    def member_parse(self, command, dispatch, *, enabled=True, **updates):
+        body = dict(chat_id="oc_testgroup", chat_type="group", text=command, sender={"open_id":"ou_bob"})
+        body.update(updates)
+        return self.router.parse(self.member_native, "base", body, None, {},
+                                 lambda: types.SimpleNamespace(userid=None),
+                                 allow_music_members=enabled, on_music=dispatch)
+
+    def test_group_member_music_is_dispatched_only_to_owned_handler_without_admin_flag(self):
+        calls=[]
+        result=self.member_parse("@_user_1 /music 七里香 周杰伦",lambda info,cmd,args:calls.append((info,cmd,args)))
+        self.assertIsNone(result.userid)  # Stop global command/media processing.
+        self.assertEqual(len(calls),1)
+        info,cmd,args=calls[0]
+        self.assertEqual((cmd,args),("/music","七里香 周杰伦"))
+        self.assertEqual(info.userid,"ou_bob")
+        self.assertFalse(info.is_channel_admin)
+        message=self.message(info.source,userid="ou_bob")
+        self.assertTrue(self.router.restore(message))
+        self.assertEqual(message.original_chat_id,"oc_testgroup")
+
+    def test_member_permission_does_not_dispatch_admin_commands_or_command_prefixes(self):
+        for command in ["/restart","/update","/sites","/version","/musicx test","/music_statusx abc"]:
+            with self.subTest(command=command):
+                calls=[]
+                self.member_parse(command,lambda *args:calls.append(args))
+                self.assertEqual(calls,[])
+
+    def test_member_permission_can_be_disabled_and_never_applies_to_private_chat(self):
+        calls=[]
+        result=self.member_parse("/music 夜曲",lambda *args:calls.append(args),enabled=False)
+        self.assertIsNone(result.userid)
+        self.assertEqual(calls,[])
+        self.assertIsNone(self.member_parse("/music 夜曲",lambda *args:calls.append(args),chat_type="p2p"))
+        self.assertEqual(calls,[])
+
+    def test_member_chat_and_foreign_plugin_callbacks_are_not_forwarded_to_global_handlers(self):
+        for body in [dict(text="普通群聊"),dict(text=None,type="cardAction",callback_data="[PLUGIN]OtherPlugin|restart")]:
+            result=self.member_parse("",lambda *args:None,**body)
+            self.assertIsNone(result.userid)
+
+    def test_member_owned_music_callback_requires_member_permission(self):
+        body=dict(type="cardAction",callback_data="[PLUGIN]MusicDownloadBridge|pick:s:1")
+        allowed=self.member_parse("",lambda *args:None,**body)
+        self.assertEqual(allowed.userid,"ou_bob")
+        denied=self.member_parse("",lambda *args:None,enabled=False,**body)
+        self.assertIsNone(denied.userid)
+
+    def test_music_argument_cannot_execute_another_command(self):
+        calls=[]
+        self.member_parse("/music /restart",lambda info,cmd,args:calls.append((cmd,args)))
+        self.assertEqual(calls,[("/music","/restart")])

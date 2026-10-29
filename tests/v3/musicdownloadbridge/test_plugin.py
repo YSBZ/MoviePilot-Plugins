@@ -48,6 +48,8 @@ def make_host_modules() -> dict[str, types.ModuleType]:
     events.eventmanager = FakeEventManager()
     schemas = types.ModuleType("app.schemas")
     schemas.__path__ = []
+    messages = types.ModuleType("app.schemas.message")
+    messages.IncomingMessage = type("IncomingMessage", (), {"userid": None})
     event_types = types.ModuleType("app.schemas.types")
     event_types.EventType = type(
         "EventType", (), {"PluginAction": "plugin.action", "MessageAction": "message.action"}
@@ -58,6 +60,7 @@ def make_host_modules() -> dict[str, types.ModuleType]:
         "app.sdk.plugin": plugin,
         "app.sdk.events": events,
         "app.schemas": schemas,
+        "app.schemas.message": messages,
         "app.schemas.types": event_types,
     }
 
@@ -166,6 +169,32 @@ class PluginAdapterTests(unittest.TestCase):
         self.assertEqual(status_message["source"], "local-chat")
         self.assertIn("/shared/download/周杰伦 - 夜曲.flac", status_message["text"])
         self.assertIn("尚未确认已入库", status_message["text"])
+
+    def test_group_member_can_search_only_music_without_becoming_admin(self):
+        config = dict(enabled=True,base_url=self.server.base_url,token="local-test-token",
+                      feishu_group_id="oc_testgroup",group_members_music=True)
+        self.plugin.init_plugin(config)
+        infos=[]
+        def native(**kwargs):
+            if str(kwargs["body"].get("text","")).startswith("/"):
+                return None
+            info=types.SimpleNamespace(userid="ou_bob",source=kwargs["source"],channel="feishu",is_channel_admin=False)
+            infos.append(info)
+            return info
+        post = getattr(getattr(self.plugin, "chain", None), "post_message", lambda *_: None)
+        self.plugin.chain=types.SimpleNamespace(post_message=post, modulemanager=types.SimpleNamespace(get_running_module=lambda _:types.SimpleNamespace(message_parser=native)))
+        hook=self.plugin.get_module()["message_parser"]
+        result=hook("飞书音乐机器人",dict(chat_id="oc_testgroup",chat_type="group",text="/music 夜曲",sender={"open_id":"ou_bob"}),None,{})
+        self.assertIsNone(result.userid)
+        self.assertEqual(self.plugin.sent_messages[-1]["userid"],"ou_bob")
+        self.assertFalse(infos[0].is_channel_admin)
+        count=len(self.plugin.sent_messages)
+        hook("飞书音乐机器人",dict(chat_id="oc_testgroup",chat_type="group",text="/restart",sender={"open_id":"ou_bob"}),None,{})
+        self.assertEqual(len(self.plugin.sent_messages),count)
+        config["group_members_music"]=False
+        self.plugin.init_plugin(config)
+        hook("飞书音乐机器人",dict(chat_id="oc_testgroup",chat_type="group",text="/music 夜曲",sender={"open_id":"ou_bob"}),None,{})
+        self.assertEqual(len(self.plugin.sent_messages),count)
 
     def test_feishu_page_callback_edits_original_card_without_new_message(self):
         self.server.state["songs"] = [dict(id=str(i),source="netease",name=f"歌曲{i}",artist="歌手",extra="{}") for i in range(1,11)]

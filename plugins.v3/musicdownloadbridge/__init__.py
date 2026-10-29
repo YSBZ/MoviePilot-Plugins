@@ -22,7 +22,7 @@ class MusicDownloadBridge(_PluginBase):
     plugin_name = "音乐下载桥接"
     plugin_desc = "通过消息搜索歌曲并提交下载，完成后由 MoviePilot 继续整理。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/163music_A.png"
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.5"
     plugin_author = "ys"
     author_url = ""
     plugin_config_prefix = "musicdownloadbridge_"
@@ -42,6 +42,7 @@ class MusicDownloadBridge(_PluginBase):
         self._service: MusicDownloadService | None = None
         self._configuration_error: str | None = None
         self._group_router: FeishuGroupRouter | None = None
+        self._group_members_music = False
 
     def init_plugin(self, config: dict[str, Any] | None = None) -> None:
         """Apply current settings; safe for repeated initialization/reload."""
@@ -56,6 +57,7 @@ class MusicDownloadBridge(_PluginBase):
         self._poll_interval = self._bounded_int(config.get("poll_interval"), 20, 5, 60)
         self._configuration_error = None
         self._group_router = None
+        self._group_members_music = config.get("group_members_music") is True
         self._service = None
         self._client = None
 
@@ -110,7 +112,20 @@ class MusicDownloadBridge(_PluginBase):
         def rejected() -> Any:
             from app.schemas.message import IncomingMessage
             return IncomingMessage()
-        return self._group_router.parse(module.message_parser, source, body, form, args, rejected)
+        return self._group_router.parse(
+            module.message_parser, source, body, form, args, rejected,
+            allow_music_members=self._group_members_music, on_music=self._dispatch_group_music,
+        )
+
+    def _dispatch_group_music(self, incoming: Any, command: str, arguments: str) -> None:
+        actions = {"/music": "music_search", "/music_pick": "music_pick", "/music_status": "music_status"}
+        action = actions.get(command)
+        if action is None or not self.get_state():
+            return
+        self.on_plugin_action(SimpleNamespace(event_data={
+            "plugin_id": self.__class__.__name__, "action": action, "arg_str": arguments,
+            "user": incoming.userid, "source": incoming.source, "channel": incoming.channel,
+        }))
 
     def _group_post_message(self, message: Any, *args: Any, **kwargs: Any) -> None:
         if self.get_state() and self._group_router:
@@ -206,6 +221,17 @@ class MusicDownloadBridge(_PluginBase):
                     },
                     {
                         "component": "VRow",
+                        "content": [column({
+                            "component": "VSwitch",
+                            "props": {
+                                "model": "group_members_music", "label": "允许此群成员点歌",
+                                "hint": "仅开放三条音乐命令；管理命令仍使用 MP 管理员名单。",
+                                "persistentHint": True,
+                            },
+                        })],
+                    },
+                    {
+                        "component": "VRow",
                         "content": [
                             column(field(
                                 "sources", "音源", placeholder="netease,qq",
@@ -227,6 +253,7 @@ class MusicDownloadBridge(_PluginBase):
             "sources": "",
             "poll_interval": 20,
             "feishu_group_id": "",
+            "group_members_music": False,
         }
 
     def get_page(self) -> list[dict[str, Any]]:
