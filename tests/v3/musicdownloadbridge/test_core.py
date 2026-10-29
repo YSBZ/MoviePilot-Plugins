@@ -88,6 +88,25 @@ class MusicDownloadServiceTests(unittest.TestCase):
         self.assertEqual(visible["path"], "/shared/download/周杰伦 - 夜曲.flac")
         self.assertEqual(visible["warning"], "MP 后续监控整理")
 
+    def test_search_pagination_snapshot_is_owned_immutable_and_expires(self):
+        result = self.service.search("夜曲", [], 10, IDENTITY)
+        before = len(self.server.state["requests"])
+        snapshot = self.service.search_session(result["session_id"], IDENTITY)
+        snapshot["songs"][0]["name"] = "changed"
+        self.assertEqual(self.service.search_session(result["session_id"], IDENTITY)["songs"][0]["name"], "夜曲")
+        self.assertEqual(len(self.server.state["requests"]), before)
+        with self.assertRaises(SessionUnavailable):
+            self.service.search_session(result["session_id"], OTHER_IDENTITY)
+        self.clock[0] += 901
+        with self.assertRaises(SessionUnavailable):
+            self.service.search_session(result["session_id"], IDENTITY)
+
+    def test_public_status_keeps_display_song_metadata(self):
+        result = self.service.search("夜曲", [], 10, IDENTITY)
+        submitted = self.service.select(result["session_id"], 1, IDENTITY)
+        self.assertEqual(submitted["song"]["name"], "夜曲")
+        self.assertNotIn("extra", submitted["song"])
+
     def test_user_identity_and_session_expiry_do_not_expose_another_users_request(self) -> None:
         result = self.service.search("夜曲", [], 5, IDENTITY)
         submitted = self.service.select(result["session_id"], 1, IDENTITY)

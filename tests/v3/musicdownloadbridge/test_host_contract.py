@@ -106,3 +106,19 @@ class Host316ContractTests(adapter.PluginAdapterTests):
         command._Command__run_command({"func": version}, channel="飞书", userid="ou_alice", source=incoming.source)
         command._Command__run_command({"func": version}, channel="飞书", userid="ou_alice", source="飞书音乐机器人")
         self.assertEqual(targets, [(None, "oc_testgroup", "chat_id"), ("ou_alice", None, "open_id")])
+
+    def test_native_feishu_card_renderer_preserves_page_buttons_including_tenth_song(self):
+        import json
+        tree = ast.parse(Path(HOST_ROOT, "app/modules/feishu/feishu.py").read_text())
+        original = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Feishu")
+        method = next(n for n in original.body if isinstance(n, ast.FunctionDef) and n.name == "_card_actions")
+        shell = ast.ClassDef(name="Feishu", bases=[], keywords=[], body=[method], decorator_list=[])
+        module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), shell], type_ignores=[])
+        namespace = {}
+        exec(compile(ast.fix_missing_locations(module), "native-card-actions.py", "exec"), namespace)
+        songs = [dict(name=f"歌曲 {n}", artist="歌手") for n in range(1,11)]
+        _, _, buttons = self.plugin_module.search_page("歌曲", "session123", songs, 1)
+        rows = namespace["Feishu"]._card_actions(buttons)
+        self.assertLessEqual(len(rows), 3)
+        self.assertIn("pick:session123:10", json.dumps(rows))
+        self.assertEqual(sum(len(row["columns"]) for row in rows), 6)

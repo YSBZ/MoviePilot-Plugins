@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Mapping, Sequence
 from typing import Any
+from types import SimpleNamespace
 
 from app.schemas.types import EventType
 from app.sdk.events import Event, eventmanager
@@ -12,6 +13,7 @@ from app.sdk.plugin import _PluginBase
 
 from .core import BridgeError, MusicBridgeClient, MusicDownloadService
 from .feishu_routing import FeishuGroupRouter
+from .presentation import search_page, status_text
 
 
 class MusicDownloadBridge(_PluginBase):
@@ -20,7 +22,7 @@ class MusicDownloadBridge(_PluginBase):
     plugin_name = "音乐下载桥接"
     plugin_desc = "通过消息搜索歌曲并提交下载，完成后由 MoviePilot 继续整理。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/163music_A.png"
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     plugin_author = "ys"
     author_url = ""
     plugin_config_prefix = "musicdownloadbridge_"
@@ -274,7 +276,7 @@ class MusicDownloadBridge(_PluginBase):
         if data.get("plugin_id") != self.__class__.__name__:
             return
         callback = str(data.get("text") or "")
-        if not callback.startswith("pick:"):
+        if not callback.startswith(("pick:", "page:", "status:")):
             return
         identity = self._identity(
             {
@@ -283,7 +285,12 @@ class MusicDownloadBridge(_PluginBase):
                 "user": data.get("userid"),
             }
         )
-        self._handle_pick(callback.removeprefix("pick:"), identity, callback=True)
+        if callback.startswith("page:"):
+            self._handle_page(callback.removeprefix("page:"), identity, event_data=data)
+        elif callback.startswith("status:"):
+            self._handle_status(callback.removeprefix("status:"), identity)
+        else:
+            self._handle_pick(callback.removeprefix("pick:"), identity, callback=True)
 
     def poll_service(self) -> None:
         """Poll a bounded batch; downloads themselves remain in the Go service."""
@@ -301,6 +308,7 @@ class MusicDownloadBridge(_PluginBase):
                 identity,
                 self._notification_title(request["status"]),
                 self._format_status(request),
+                buttons=self._status_buttons(request),
             )
             self._service.mark_notified(request["request_id"])
 
@@ -330,27 +338,40 @@ class MusicDownloadBridge(_PluginBase):
             self._reply(identity, "音乐搜索", "没有找到候选歌曲，请换个关键词再试。")
             return
 
-        lines = [f"搜索会话：{session_id}（15 分钟内有效）"]
-        buttons: list[list[dict[str, str]]] = []
-        for index, song in enumerate(songs, 1):
-            name = self._display(song.get("name"))
-            artist = self._display(song.get("artist"))
-            album = self._display(song.get("album"))
-            details = " - ".join(value for value in (artist, album) if value)
-            lines.append(f"{index}. {name}" + (f"（{details}）" if details else ""))
-            label = f"{index}. {name}"
-            if artist:
-                label = f"{label} · {artist}"
-            buttons.append(
-                [
-                    {
-                        "text": label[:60],
-                        "callback_data": f"[PLUGIN]{self.__class__.__name__}|pick:{session_id}:{index}",
-                    }
-                ]
-            )
-        lines.append(f"选择：/music_pick {session_id} 编号")
-        self._reply(identity, "音乐搜索结果", "\n".join(lines), buttons=buttons)
+        title, text, buttons = search_page(query, session_id, songs)
+        self._reply(identity, title, text, buttons=buttons)
+
+    def _handle_page(self, arg_str: str, identity: dict[str, Any], *, event_data: Mapping[str, Any] | None = None) -> None:
+        try:
+            session_id, number = arg_str.split(":")
+            result = self._service.search_session(session_id, identity)
+            title, text, buttons = search_page(result["query"], session_id, result["songs"], int(number))
+        except (BridgeError, ValueError):
+            self._reply(identity, "音乐搜索", "结果已过期、页码无效或不可访问，请重新搜索。")
+            return
+        if not self._edit_search_card(identity, title, text, buttons, event_data or {}):
+            self._reply(identity, title, text, buttons=buttons)
+
+    def _edit_search_card(self, identity: Mapping[str, Any], title: str, text: str,
+                          buttons: list[list[dict[str, str]]], event_data: Mapping[str, Any]) -> bool:
+        channel = identity.get("channel")
+        message_id = event_data.get("original_message_id")
+        chat_id = event_data.get("original_chat_id")
+        if str(getattr(channel, "value", channel)).lower() not in ("feishu", "飞书") or not message_id or not chat_id:
+            return False
+        edit = getattr(getattr(self, "chain", None), "edit_message", None)
+        if not callable(edit):
+            return False
+        route = SimpleNamespace(source=identity.get("source"), channel=channel,
+                                original_chat_id=chat_id, private_delivery=False)
+        if self._group_router:
+            self._group_router.restore(route)
+        try:
+            return bool(edit(channel=channel, source=route.source, message_id=message_id,
+                             chat_id=route.original_chat_id, title=title, text=text, buttons=buttons))
+        except Exception:
+            # A failed edit must not make the remaining candidates inaccessible.
+            return False
 
     def _handle_pick(
         self,
@@ -374,7 +395,7 @@ class MusicDownloadBridge(_PluginBase):
             title = "下载提交失败"
         else:
             title = "已提交下载"
-        self._reply(identity, title, self._format_status(request))
+        self._reply(identity, title, self._format_status(request), buttons=self._status_buttons(request))
 
     def _handle_status(self, request_id: str, identity: dict[str, Any]) -> None:
         request_id = request_id.strip()
@@ -386,36 +407,15 @@ class MusicDownloadBridge(_PluginBase):
         except BridgeError as error:
             self._reply(identity, "音乐下载状态", str(error))
             return
-        self._reply(identity, "音乐下载状态", self._format_status(request))
+        self._reply(identity, "音乐下载状态", self._format_status(request, detailed=True))
 
-    def _format_status(self, request: Mapping[str, Any]) -> str:
+    def _format_status(self, request: Mapping[str, Any], *, detailed: bool = False) -> str:
+        return status_text(request, detailed=detailed)
+
+    @staticmethod
+    def _status_buttons(request: Mapping[str, Any]) -> list[list[dict[str, str]]]:
         request_id = str(request.get("request_id") or "")
-        status = str(request.get("status") or "unknown")
-        labels = {
-            "submitting": "提交中",
-            "waiting": "等待中",
-            "queued": "排队中",
-            "accepted": "排队中",
-            "pending": "等待中",
-            "running": "下载中",
-            "processing": "下载中",
-            "downloading": "下载中",
-            "completed": "下载完成",
-            "failed": "下载失败",
-            "skipped": "已跳过",
-            "canceled": "已取消",
-            "unknown": "状态待确认，稍后会自动重试查询",
-        }
-        lines = [f"任务：{request_id}", f"状态：{labels.get(status, status[:40])}"]
-        if request.get("path"):
-            lines.append(f"文件：{request['path']}")
-        if request.get("error"):
-            lines.append(f"原因：{request['error']}")
-        if request.get("warning"):
-            lines.append(f"说明：{request['warning']}")
-        if status == "completed":
-            lines.append("下载已完成；MoviePilot 后续从共享下载目录监控整理，当前尚未确认已入库。")
-        return "\n".join(lines)
+        return [[{"text": "查看详情", "callback_data": f"[PLUGIN]MusicDownloadBridge|status:{request_id}"}]]
 
     @staticmethod
     def _notification_title(status: str) -> str:

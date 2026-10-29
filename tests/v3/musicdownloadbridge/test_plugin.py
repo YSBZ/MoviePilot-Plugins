@@ -167,6 +167,49 @@ class PluginAdapterTests(unittest.TestCase):
         self.assertIn("/shared/download/周杰伦 - 夜曲.flac", status_message["text"])
         self.assertIn("尚未确认已入库", status_message["text"])
 
+    def test_feishu_page_callback_edits_original_card_without_new_message(self):
+        self.server.state["songs"] = [dict(id=str(i),source="netease",name=f"歌曲{i}",artist="歌手",extra="{}") for i in range(1,11)]
+        self.plugin.on_plugin_action(self.event("music_search", "歌曲"))
+        first = self.plugin.sent_messages[-1]
+        button = next(b for row in first["buttons"] for b in row if "|page:" in b["callback_data"])
+        edits = []
+        self.plugin.chain = types.SimpleNamespace(edit_message=lambda **kwargs: edits.append(kwargs) or True)
+        count = len(self.plugin.sent_messages)
+        self.plugin.on_message_action(types.SimpleNamespace(event_data={
+            "plugin_id":"MusicDownloadBridge", "text":button["callback_data"].split("|",1)[1],
+            "userid":"alice", "channel":"feishu", "source":"local-chat",
+            "original_message_id":"om_fixture", "original_chat_id":"oc_fixture",
+        }))
+        self.assertEqual(len(self.plugin.sent_messages),count)
+        self.assertEqual(edits[0]["message_id"],"om_fixture")
+        self.assertEqual(edits[0]["chat_id"],"oc_fixture")
+        self.assertIn("第 2/2 页",edits[0]["text"])
+
+    def test_compact_pages_reach_tenth_song_and_status_details(self):
+        self.server.state["songs"] = [dict(id=f"song-{i}",source="netease",name=f"歌曲{i}",artist="歌手",album="专辑",extra="{}") for i in range(1,11)]
+        self.plugin.on_plugin_action(self.event("music_search", "歌曲"))
+        search = self.plugin.sent_messages[-1]
+        next_button = next(b for row in search["buttons"] for b in row if "|page:" in b["callback_data"])
+        def press(button):
+            self.plugin.on_message_action(types.SimpleNamespace(event_data={
+                "plugin_id":"MusicDownloadBridge", "text":button["callback_data"].split("|",1)[1],
+                "userid":"alice", "channel":"feishu", "source":"local-chat",
+            }))
+        press(next_button)
+        second = self.plugin.sent_messages[-1]
+        self.assertIn("第 2/2 页", second["text"])
+        tenth = next(b for row in second["buttons"] for b in row if b["text"] == "下载 10")
+        press(tenth)
+        submitted = self.plugin.sent_messages[-1]
+        self.assertIn("歌曲10",submitted["text"])
+        self.assertNotIn("任务：",submitted["text"])
+        post = next(r for r in self.server.state["requests"] if r["method"] == "POST")
+        self.assertEqual(post["json"]["song"]["id"], "song-10")
+        self.server.set_status(post["json"]["request_id"],"success",path="/app/downloads/song.mp3")
+        press(submitted["buttons"][0][0])
+        self.assertIn("/app/downloads/song.mp3",self.plugin.sent_messages[-1]["text"])
+        self.assertIn(post["json"]["request_id"],self.plugin.sent_messages[-1]["text"])
+
     def test_message_action_is_scoped_to_plugin_and_full_session_identity(self) -> None:
         self.plugin.on_plugin_action(self.event("music_search", "夜曲"))
         callback = self.plugin.sent_messages[-1]["buttons"][0][0]["callback_data"]
@@ -215,7 +258,7 @@ class PluginAdapterTests(unittest.TestCase):
             event_data={"data": {"action": "music_search", "arg_str": "夜曲", **self.identity}}
         )
         self.plugin.on_plugin_action(event)
-        self.assertIn("音乐搜索结果", self.plugin.sent_messages[-1]["title"])
+        self.assertIn("夜曲", self.plugin.sent_messages[-1]["title"])
 
     def test_invalid_configuration_and_repeated_stop_are_safe(self) -> None:
         self.plugin.init_plugin({"enabled": True, "base_url": self.server.base_url})

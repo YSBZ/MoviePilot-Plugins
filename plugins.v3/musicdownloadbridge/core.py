@@ -229,6 +229,7 @@ class MusicDownloadService:
             self._state["sessions"][session_id] = {
                 "identity": owner,
                 "songs": songs,
+                "query": query,
                 "created_at": now,
                 "expires_at": now + self._session_ttl,
                 "selection_requests": {},
@@ -239,6 +240,18 @@ class MusicDownloadService:
                 "session_id": session_id,
                 "songs": deepcopy(songs),
                 "expires_at": now + self._session_ttl,
+            }
+
+    def search_session(self, session_id: str, identity: Mapping[str, Any]) -> dict[str, Any]:
+        """Read an owned, unexpired snapshot without searching again or renewing TTL."""
+        owner = _normalize_identity(identity)
+        with self._lock:
+            session = self._state["sessions"].get(session_id)
+            if not session or session.get("identity") != owner or float(session.get("expires_at", 0)) <= self._now():
+                raise SessionUnavailable("搜索结果已过期或不可访问，请重新搜索")
+            return {
+                "session_id": session_id, "query": str(session.get("query") or "搜索结果"),
+                "songs": deepcopy(session["songs"]), "expires_at": session["expires_at"],
             }
 
     def select(
@@ -491,7 +504,7 @@ class MusicDownloadService:
         self._save_state(deepcopy(self._state))
 
     def _public_request(self, record: Mapping[str, Any]) -> dict[str, Any]:
-        return {
+        result = {
             key: deepcopy(record.get(key))
             for key in (
                 "request_id",
@@ -504,3 +517,7 @@ class MusicDownloadService:
                 "notified",
             )
         }
+        song = record.get("song")
+        if isinstance(song, Mapping):
+            result["song"] = {key: str(song.get(key) or "") for key in ("name", "artist", "album", "source")}
+        return result
