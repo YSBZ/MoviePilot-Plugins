@@ -18,7 +18,7 @@ class MusicDownloadBridge(_PluginBase):
     plugin_name = "音乐下载桥接"
     plugin_desc = "通过消息搜索歌曲并提交下载，完成后由 MoviePilot 继续整理。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/163music_A.png"
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     plugin_author = "ys"
     author_url = ""
     plugin_config_prefix = "musicdownloadbridge_"
@@ -107,51 +107,63 @@ class MusicDownloadBridge(_PluginBase):
         return []
 
     def get_form(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        def field(model: str, label: str, **props: Any) -> dict[str, Any]:
+            return {
+                "component": "VTextField",
+                "props": {
+                    "model": model, "label": label,
+                    "variant": "outlined", "density": "comfortable",
+                    "persistentHint": True, **props,
+                },
+            }
+
+        def column(component: dict[str, Any], md: int = 12) -> dict[str, Any]:
+            return {
+                "component": "VCol",
+                "props": {"cols": 12, "md": md, "class": "pb-4"},
+                "content": [component],
+            }
+
         return [
             {
                 "component": "VForm",
                 "content": [
                     {
-                        "component": "VSwitch",
-                        "props": {"model": "enabled", "label": "启用插件"},
+                        "component": "VRow",
+                        "content": [column({
+                            "component": "VSwitch",
+                            "props": {"model": "enabled", "label": "启用插件", "hideDetails": True},
+                        })],
                     },
                     {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "base_url",
-                            "label": "音乐下载服务地址",
-                            "hint": "保留服务路由前缀，例如 http://NAS-IP:8085/music",
-                            "persistentHint": True,
-                            "placeholder": "http://NAS-IP:8085/music",
-                        },
+                        "component": "VRow",
+                        "content": [column(field(
+                            "base_url", "音乐下载服务地址",
+                            hint="保留 /music 前缀，例如 http://NAS-IP:8085/music",
+                            placeholder="http://NAS-IP:8085/music",
+                        ))],
                     },
                     {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "token",
-                            "label": "Bearer token",
-                            "type": "password",
-                            "autocomplete": "new-password",
-                        },
+                        "component": "VRow",
+                        "content": [column(field(
+                            "token", "Bearer token", type="password",
+                            autocomplete="new-password",
+                            hint="与下载服务的 MUSIC_BRIDGE_TOKEN 保持一致",
+                        ))],
                     },
                     {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "sources",
-                            "label": "音源（逗号分隔，可留空使用服务端默认）",
-                            "placeholder": "netease,qq",
-                        },
-                    },
-                    {
-                        "component": "VSlider",
-                        "props": {
-                            "model": "poll_interval",
-                            "label": "下载状态轮询间隔（秒）",
-                            "min": 5,
-                            "max": 60,
-                            "step": 5,
-                            "thumbLabel": True,
-                        },
+                        "component": "VRow",
+                        "content": [
+                            column(field(
+                                "sources", "音源", placeholder="netease,qq",
+                                hint="多个音源用英文逗号分隔；留空使用服务端默认值",
+                            ), md=6),
+                            column(field(
+                                "poll_interval", "下载状态轮询间隔（秒）", type="number",
+                                min=5, max=60, step=5,
+                                hint="5–60 秒，建议 20 秒",
+                            ), md=6),
+                        ],
                     },
                 ],
             }
