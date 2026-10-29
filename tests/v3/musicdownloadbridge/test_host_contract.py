@@ -72,3 +72,37 @@ class Host316ContractTests(adapter.PluginAdapterTests):
     def setUp(self):
         super().setUp()
         self.plugin.sent_messages = self.plugin.chain.messages
+
+    def test_actual_316_command_and_feishu_target_contract_keep_group_and_private_separate(self):
+        import copy
+        import inspect
+
+        def load_class(path, class_name, methods, namespace):
+            tree = ast.parse(Path(HOST_ROOT, path).read_text())
+            original = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
+            body = [n for n in original.body if isinstance(n, ast.FunctionDef) and n.name in methods]
+            shell = ast.ClassDef(name=class_name, bases=[], keywords=[], body=body, decorator_list=[])
+            module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), shell], type_ignores=[])
+            exec(compile(ast.fix_missing_locations(module), path, "exec"), namespace)
+            return namespace[class_name]
+
+        command = load_class("app/command.py", "Command", {"__run_command"}, {
+            "copy": copy,
+            "ObjectUtils": types.SimpleNamespace(arguments=lambda f: len(inspect.signature(f).parameters)),
+        })()
+        module = load_class("app/modules/feishu/module.py", "FeishuModule", {"_resolve_message_target"}, {})
+        router = self.plugin_module.FeishuGroupRouter("oc_testgroup", b"k" * 32)
+        incoming = router.parse(
+            lambda **kwargs: types.SimpleNamespace(source=kwargs["source"], userid="ou_alice"),
+            "飞书音乐机器人", {"chat_id": "oc_testgroup", "chat_type": "group"}, None, {}, lambda: None,
+        )
+        targets = []
+        def version(channel, userid, source=None):
+            message = types.SimpleNamespace(channel=channel, userid=userid, source=source,
+                                            original_chat_id=None, private_delivery=False, targets={})
+            router.restore(message)
+            targets.append(module._resolve_message_target(message))
+        # Run the real host command body, which drops chat_id but preserves source.
+        command._Command__run_command({"func": version}, channel="飞书", userid="ou_alice", source=incoming.source)
+        command._Command__run_command({"func": version}, channel="飞书", userid="ou_alice", source="飞书音乐机器人")
+        self.assertEqual(targets, [(None, "oc_testgroup", "chat_id"), ("ou_alice", None, "open_id")])

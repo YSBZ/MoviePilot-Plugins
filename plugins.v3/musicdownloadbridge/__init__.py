@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -10,6 +11,7 @@ from app.sdk.events import Event, eventmanager
 from app.sdk.plugin import _PluginBase
 
 from .core import BridgeError, MusicBridgeClient, MusicDownloadService
+from .feishu_routing import FeishuGroupRouter
 
 
 class MusicDownloadBridge(_PluginBase):
@@ -18,7 +20,7 @@ class MusicDownloadBridge(_PluginBase):
     plugin_name = "音乐下载桥接"
     plugin_desc = "通过消息搜索歌曲并提交下载，完成后由 MoviePilot 继续整理。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/163music_A.png"
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     plugin_author = "ys"
     author_url = ""
     plugin_config_prefix = "musicdownloadbridge_"
@@ -37,6 +39,7 @@ class MusicDownloadBridge(_PluginBase):
         self._client: MusicBridgeClient | None = None
         self._service: MusicDownloadService | None = None
         self._configuration_error: str | None = None
+        self._group_router: FeishuGroupRouter | None = None
 
     def init_plugin(self, config: dict[str, Any] | None = None) -> None:
         """Apply current settings; safe for repeated initialization/reload."""
@@ -50,6 +53,7 @@ class MusicDownloadBridge(_PluginBase):
         self._sources = self._parse_sources(config.get("sources"))
         self._poll_interval = self._bounded_int(config.get("poll_interval"), 20, 5, 60)
         self._configuration_error = None
+        self._group_router = None
         self._service = None
         self._client = None
 
@@ -72,6 +76,45 @@ class MusicDownloadBridge(_PluginBase):
             session_ttl_seconds=self._SESSION_TTL_SECONDS,
             poll_batch_size=5,
         )
+
+        group_id = str(config.get("feishu_group_id") or "").strip()
+        if group_id:
+            key = self.get_data("music_group_route_key_v1")
+            if not isinstance(key, str) or len(key) != 64:
+                key = secrets.token_hex(32)
+                self.save_data("music_group_route_key_v1", key)
+            try:
+                self._group_router = FeishuGroupRouter(group_id, bytes.fromhex(key))
+            except ValueError:
+                self._configuration_error = "飞书群 Chat ID 无效，群路由适配未启用"
+
+    def get_module(self) -> dict[str, Any]:
+        """Use documented MP module hooks; no monkey patches to host code."""
+        if not self.get_state() or not self._group_router:
+            return {}
+        return {
+            "message_parser": self._group_message_parser,
+            "post_message": self._group_post_message,
+            "post_medias_message": self._group_post_message,
+            "post_torrents_message": self._group_post_message,
+        }
+
+    def _group_message_parser(self, source: str, body: Any, form: Any, args: Any) -> Any:
+        if not self.get_state() or not self._group_router:
+            return None
+        module = self.chain.modulemanager.get_running_module("FeishuModule")
+        if module is None:
+            return None
+        def rejected() -> Any:
+            from app.schemas.message import IncomingMessage
+            return IncomingMessage()
+        return self._group_router.parse(module.message_parser, source, body, form, args, rejected)
+
+    def _group_post_message(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        if self.get_state() and self._group_router:
+            # The host still sends the message once, with its original channel
+            # rules and formatting, after restoring source and group context.
+            self._group_router.restore(message)
 
     def get_state(self) -> bool:
         return self._enabled and not self._stopped and self._service is not None
@@ -153,6 +196,14 @@ class MusicDownloadBridge(_PluginBase):
                     },
                     {
                         "component": "VRow",
+                        "content": [column(field(
+                            "feishu_group_id", "飞书群 Chat ID（可选）",
+                            placeholder="oc_...",
+                            hint="只适配此群的命令与音乐回复；私聊保持私聊。留空关闭群路由适配。",
+                        ))],
+                    },
+                    {
+                        "component": "VRow",
                         "content": [
                             column(field(
                                 "sources", "音源", placeholder="netease,qq",
@@ -173,6 +224,7 @@ class MusicDownloadBridge(_PluginBase):
             "token": "",
             "sources": "",
             "poll_interval": 20,
+            "feishu_group_id": "",
         }
 
     def get_page(self) -> list[dict[str, Any]]:
@@ -256,6 +308,7 @@ class MusicDownloadBridge(_PluginBase):
         """Release the HTTP client safely during plugin reload or shutdown."""
         self._stopped = True
         self._enabled = False
+        self._group_router = None
         self._close_client()
         self._service = None
 

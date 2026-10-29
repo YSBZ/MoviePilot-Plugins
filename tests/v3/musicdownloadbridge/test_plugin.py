@@ -89,6 +89,37 @@ class PluginAdapterTests(unittest.TestCase):
         )
         self.identity = {"channel": "feishu", "source": "local-chat", "user": "alice"}
 
+    def test_group_module_hooks_preserve_user_and_restore_reply_chat(self) -> None:
+        config = {
+            "enabled": True, "base_url": self.server.base_url,
+            "token": "local-test-token", "feishu_group_id": "oc_testgroup",
+        }
+        self.plugin.init_plugin(config)
+        def native_parser(**kwargs):
+            return types.SimpleNamespace(
+                source=kwargs["source"], text=kwargs["body"]["text"],
+                userid="ou_alice", is_channel_admin=True,
+            )
+        native = types.SimpleNamespace(message_parser=native_parser)
+        self.plugin.chain = types.SimpleNamespace(modulemanager=types.SimpleNamespace(get_running_module=lambda _: native))
+        hooks = self.plugin.get_module()
+        incoming = hooks["message_parser"](
+            "飞书音乐机器人", {"chat_id": "oc_testgroup", "chat_type": "group", "text": "@_user_1 /version"}, None, {},
+        )
+        self.assertEqual(incoming.text, "/version")
+        self.assertEqual(incoming.userid, "ou_alice")
+        message = types.SimpleNamespace(source=incoming.source, channel="飞书", userid=incoming.userid, original_chat_id=None, private_delivery=False)
+        hooks["post_message"](message)
+        self.assertEqual(message.original_chat_id, "oc_testgroup")
+        self.assertEqual(message.source, "飞书音乐机器人")
+        self.assertEqual(message.userid, "ou_alice")
+        # Reconfiguration/restart retains the same route signing key.
+        self.plugin.init_plugin(config)
+        again = self.plugin.get_module()["message_parser"](
+            "飞书音乐机器人", {"chat_id": "oc_testgroup", "chat_type": "group", "text": "/version"}, None, {},
+        )
+        self.assertEqual(again.source, incoming.source)
+
     def tearDown(self) -> None:
         self.plugin.stop_service()
 
