@@ -18,7 +18,7 @@ class MusicDownloadBridge(_PluginBase):
     plugin_name = "音乐下载桥接"
     plugin_desc = "通过消息搜索歌曲并提交下载，完成后由 MoviePilot 继续整理。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/163music_A.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "ys"
     author_url = ""
     plugin_config_prefix = "musicdownloadbridge_"
