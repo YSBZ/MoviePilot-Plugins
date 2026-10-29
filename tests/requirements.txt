@@ -1,0 +1,4 @@
+# MoviePilot supplies requests in its shared plugin runtime. This file is only
+# for running the isolated local HTTP integration tests outside that runtime.
+requests~=2.34.2
+apscheduler~=3.11.2

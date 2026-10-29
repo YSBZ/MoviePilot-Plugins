@@ -1,0 +1,15 @@
+{
+  "MusicDownloadBridge": {
+    "name": "音乐下载桥接",
+    "description": "通过消息搜索歌曲并提交下载，完成后由 MoviePilot 继续整理。",
+    "labels": "音乐,下载",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/163music_A.png",
+    "author": "ys",
+    "level": 1,
+    "system_version": ">=3.2.1",
+    "history": {
+      "v1.0.0": "首版：支持搜索、候选选择、任务状态查询和失败重试。"
+    }
+  }
+}
