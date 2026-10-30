@@ -26,6 +26,9 @@ class FakePluginBase:
     def save_data(self, key, value):
         self._test_data[key] = value
 
+    def update_config(self, config):
+        self.saved_config = dict(config)
+
     def post_message(self, **kwargs):
         self.sent_messages.append(kwargs)
 
@@ -91,6 +94,35 @@ class PluginAdapterTests(unittest.TestCase):
             }
         )
         self.identity = {"channel": "feishu", "source": "local-chat", "user": "alice"}
+
+    def test_sources_form_is_multiselect_with_four_defaults(self) -> None:
+        form, defaults = self.plugin.get_form()
+        def fields(nodes):
+            for node in nodes:
+                yield node
+                yield from fields(node.get("content", []))
+        field = next(node for node in fields(form) if node.get("props", {}).get("model") == "sources")
+        self.assertEqual(field["component"], "VSelect")
+        self.assertTrue(field["props"]["multiple"])
+        self.assertTrue(field["props"]["chips"])
+        expected = ["kugou", "migu", "qq", "netease"]
+        self.assertEqual(defaults["sources"], expected)
+        self.assertEqual([item["value"] for item in field["props"]["items"]], expected)
+
+    def test_legacy_sources_migrate_to_array_without_losing_settings(self) -> None:
+        saved = []
+        self.plugin.update_config = lambda config: saved.append(dict(config))
+        config = {"enabled": True, "base_url": self.server.base_url, "token": "local-test-token", "sources": "netease,qq", "poll_interval": 25}
+        self.plugin.init_plugin(config)
+        self.assertEqual(self.plugin._sources, ["netease", "qq"])
+        self.assertEqual(saved[-1]["sources"], ["netease", "qq"])
+        self.assertEqual(saved[-1]["token"], config["token"])
+        self.assertEqual(saved[-1]["poll_interval"], 25)
+        self.assertEqual(config["sources"], "netease,qq")
+
+    def test_empty_sources_use_default_four(self) -> None:
+        for value in (None, "", []):
+            self.assertEqual(self.plugin._parse_sources(value), ["kugou", "migu", "qq", "netease"])
 
     def test_group_module_hooks_preserve_user_and_restore_reply_chat(self) -> None:
         config = {

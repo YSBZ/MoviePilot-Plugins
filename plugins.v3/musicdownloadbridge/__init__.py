@@ -15,6 +15,13 @@ from .core import BridgeError, MusicBridgeClient, MusicDownloadService
 from .feishu_routing import FeishuGroupRouter
 from .presentation import search_page, status_text
 
+DEFAULT_SOURCES = ("kugou", "migu", "qq", "netease")
+SOURCE_ITEMS = [
+    {"title": "酷狗音乐", "value": "kugou"},
+    {"title": "咪咕音乐", "value": "migu"},
+    {"title": "QQ 音乐", "value": "qq"},
+    {"title": "网易云音乐", "value": "netease"},
+]
 
 class MusicDownloadBridge(_PluginBase):
     """Search and submit one music candidate through a bounded HTTP bridge."""
@@ -22,7 +29,7 @@ class MusicDownloadBridge(_PluginBase):
     plugin_name = "音乐下载桥接"
     plugin_desc = "通过消息搜索歌曲并提交下载，完成后由 MoviePilot 继续整理。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/163music_A.png"
-    plugin_version = "1.0.5"
+    plugin_version = "1.0.6"
     plugin_author = "ys"
     author_url = ""
     plugin_config_prefix = "musicdownloadbridge_"
@@ -54,6 +61,11 @@ class MusicDownloadBridge(_PluginBase):
         self._enabled = bool(config.get("enabled"))
         self._stopped = False
         self._sources = self._parse_sources(config.get("sources"))
+        # VSelect expects an array. Preserve all other saved settings while
+        # migrating the former comma-separated text field once.
+        if not isinstance(config.get("sources"), list):
+            config["sources"] = list(self._sources)
+            self.update_config(config)
         self._poll_interval = self._bounded_int(config.get("poll_interval"), 20, 5, 60)
         self._configuration_error = None
         self._group_router = None
@@ -233,10 +245,18 @@ class MusicDownloadBridge(_PluginBase):
                     {
                         "component": "VRow",
                         "content": [
-                            column(field(
-                                "sources", "音源", placeholder="netease,qq",
-                                hint="多个音源用英文逗号分隔；留空使用服务端默认值",
-                            ), md=6),
+                            column({
+                                "component": "VSelect",
+                                "props": {
+                                    "model": "sources", "label": "搜索音源",
+                                    "items": SOURCE_ITEMS,
+                                    "multiple": True, "chips": True,
+                                    "closableChips": True, "clearable": True,
+                                    "variant": "outlined", "density": "comfortable",
+                                    "hint": "默认四源，可按需取消；清空后仍使用默认四源。需配套 DL 1.0.1 或更新版本。",
+                                    "persistentHint": True,
+                                },
+                            }, md=6),
                             column(field(
                                 "poll_interval", "下载状态轮询间隔（秒）", type="number",
                                 min=5, max=60, step=5,
@@ -250,7 +270,7 @@ class MusicDownloadBridge(_PluginBase):
             "enabled": False,
             "base_url": "",
             "token": "",
-            "sources": "",
+            "sources": list(DEFAULT_SOURCES),
             "poll_interval": 20,
             "feishu_group_id": "",
             "group_members_music": False,
@@ -503,7 +523,7 @@ class MusicDownloadBridge(_PluginBase):
             values = value
         else:
             values = []
-        return list(dict.fromkeys(str(source).strip() for source in values if str(source).strip()))
+        return list(dict.fromkeys(str(source).strip() for source in values if str(source).strip())) or list(DEFAULT_SOURCES)
 
     @staticmethod
     def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:

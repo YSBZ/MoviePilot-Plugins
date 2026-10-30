@@ -41,6 +41,10 @@ class Transport:
 
 
 class InstanceConfig:
+    def save_config_data(self, **kwargs):
+        self.config = kwargs["config_data"]
+        return True
+
     def get_config_data(self, plugin_id):
         return {}
 
